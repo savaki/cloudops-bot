@@ -150,7 +150,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret-key
 #### Application Configuration
 
 ```bash
-export ENVIRONMENT=dev                          # or 'prod'
+export ENV=dev                          # or 'prod'
 export CONVERSATIONS_TABLE=cloudops-conversations
 export CONVERSATION_HISTORY_TABLE=cloudops-conversation-history
 export INACTIVITY_TIMEOUT_MINUTES=30            # Default: 30 minutes
@@ -246,7 +246,7 @@ export SLACK_BOT_TOKEN=xoxb-your-token
 export SLACK_SIGNING_KEY=your-signing-secret
 export CLAUDE_API_KEY=sk-ant-your-key
 export AWS_REGION=us-east-1
-export ENVIRONMENT=dev
+export ENV=dev
 export INACTIVITY_TIMEOUT_MINUTES=30
 export CONVERSATIONS_TABLE=cloudops-conversations-dev
 export CONVERSATION_HISTORY_TABLE=cloudops-conversation-history-dev
@@ -360,17 +360,17 @@ The script will:
 If you prefer manual control:
 
 ```bash
-ENVIRONMENT=dev
+ENV=dev
 AWS_REGION=us-east-1
 SUBNET_IDS="subnet-abc123,subnet-def456"
 SECURITY_GROUP_ID="sg-xyz789"
 
 # Deploy the complete stack
 aws cloudformation create-stack \
-  --stack-name cloudops-${ENVIRONMENT} \
+  --stack-name cloudops-${ENV} \
   --template-body file://infrastructure/cloudformation/cloudops-stack.yaml \
   --parameters \
-    ParameterKey=Environment,ParameterValue=${ENVIRONMENT} \
+    ParameterKey=Environment,ParameterValue=${ENV} \
     ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
     ParameterKey=SecurityGroupId,ParameterValue=${SECURITY_GROUP_ID} \
   --capabilities CAPABILITY_NAMED_IAM \
@@ -378,7 +378,7 @@ aws cloudformation create-stack \
 
 # Wait for stack creation
 aws cloudformation wait stack-create-complete \
-  --stack-name cloudops-${ENVIRONMENT} \
+  --stack-name cloudops-${ENV} \
   --region ${AWS_REGION}
 ```
 
@@ -387,17 +387,17 @@ aws cloudformation wait stack-create-complete \
 After the stack is created:
 
 ```bash
-ENVIRONMENT=dev
+ENV=dev
 
 # 1. Build and push the agent Docker image
-./deployments/build-agent.sh ${ENVIRONMENT}
+./deployments/build-agent.sh ${ENV}
 
 # 2. Package and deploy Lambda function
-./deployments/package-lambda.sh ${ENVIRONMENT} slack-handler
+./deployments/package-lambda.sh ${ENV} slack-handler
 
 # 3. Get the webhook URL for Slack
 aws cloudformation describe-stacks \
-  --stack-name cloudops-${ENVIRONMENT} \
+  --stack-name cloudops-${ENV} \
   --query 'Stacks[0].Outputs[?OutputKey==`SlackWebhookUrl`].OutputValue' \
   --output text
 ```
