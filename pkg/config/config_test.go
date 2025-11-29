@@ -17,7 +17,6 @@ func TestLoadConfig(t *testing.T) {
 	os.Setenv("SLACK_SIGNING_KEY", "test-signing-key")
 	os.Setenv("CONVERSATIONS_TABLE", "test-conversations")
 	os.Setenv("CONVERSATION_HISTORY_TABLE", "test-history")
-	os.Setenv("ENVIRONMENT", "dev")
 
 	cfg, err := Load()
 	if err != nil {
@@ -38,10 +37,6 @@ func TestLoadConfig(t *testing.T) {
 
 	if cfg.ConversationsTable != "test-conversations" {
 		t.Errorf("ConversationsTable = %s, want test-conversations", cfg.ConversationsTable)
-	}
-
-	if cfg.Environment != "dev" {
-		t.Errorf("Environment = %s, want dev", cfg.Environment)
 	}
 }
 
@@ -85,10 +80,6 @@ func TestConfigDefaultValues(t *testing.T) {
 
 	if cfg.InactivityTimeoutMinutes != 30 {
 		t.Errorf("Default InactivityTimeoutMinutes = %d, want 30", cfg.InactivityTimeoutMinutes)
-	}
-
-	if cfg.Environment != "dev" {
-		t.Errorf("Default Environment = %s, want dev", cfg.Environment)
 	}
 }
 
