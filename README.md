@@ -150,7 +150,6 @@ export AWS_SECRET_ACCESS_KEY=your-secret-key
 #### Application Configuration
 
 ```bash
-export ENV=dev                          # or 'prod'
 export CONVERSATIONS_TABLE=cloudops-conversations
 export CONVERSATION_HISTORY_TABLE=cloudops-conversation-history
 export INACTIVITY_TIMEOUT_MINUTES=30            # Default: 30 minutes
@@ -246,7 +245,6 @@ export SLACK_BOT_TOKEN=xoxb-your-token
 export SLACK_SIGNING_KEY=your-signing-secret
 export CLAUDE_API_KEY=sk-ant-your-key
 export AWS_REGION=us-east-1
-export ENV=dev
 export INACTIVITY_TIMEOUT_MINUTES=30
 export CONVERSATIONS_TABLE=cloudops-conversations-dev
 export CONVERSATION_HISTORY_TABLE=cloudops-conversation-history-dev
