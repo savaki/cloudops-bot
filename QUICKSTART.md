@@ -43,17 +43,17 @@ aws secretsmanager create-secret \
 
 ```bash
 # Use the Makefile for easy deployment
-make deploy-all ENVIRONMENT=dev
+make deploy-all ENV=dev
 
 # Or manually:
-make deploy-vpc ENVIRONMENT=dev
-make deploy-dynamodb ENVIRONMENT=dev
-make deploy-iam ENVIRONMENT=dev
-make deploy-ecr ENVIRONMENT=dev
-make deploy-ecs ENVIRONMENT=dev
-make deploy-stepfunc ENVIRONMENT=dev
-make deploy-lambda ENVIRONMENT=dev
-make deploy-apigateway ENVIRONMENT=dev  # Optional
+make deploy-vpc ENV=dev
+make deploy-dynamodb ENV=dev
+make deploy-iam ENV=dev
+make deploy-ecr ENV=dev
+make deploy-ecs ENV=dev
+make deploy-stepfunc ENV=dev
+make deploy-lambda ENV=dev
+make deploy-apigateway ENV=dev  # Optional
 ```
 
 ## 5. Implement Your Agent (varies)
@@ -84,8 +84,8 @@ See `IMPLEMENTATION_GUIDE.md` for detailed instructions.
 
 ```bash
 # Check logs
-make logs-lambda ENVIRONMENT=dev  # In one terminal
-make logs-agent ENVIRONMENT=dev   # In another
+make logs-lambda ENV=dev  # In one terminal
+make logs-agent ENV=dev   # In another
 
 # In Slack:
 # @CloudOps hello

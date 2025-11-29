@@ -27,9 +27,6 @@ type Config struct {
 
 	// Step Functions
 	StepFunctionArn string
-
-	// Environment
-	Environment string
 }
 
 // Load reads configuration from environment variables
@@ -44,7 +41,6 @@ func Load() (*Config, error) {
 		ConversationTTLDays:      getEnvInt("CONVERSATION_TTL_DAYS", 7),
 		BedrockModelID:           getEnv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
 		StepFunctionArn:          getEnv("STEP_FUNCTION_ARN", ""),
-		Environment:              getEnv("ENVIRONMENT", "dev"),
 	}
 
 	// Validate required fields

@@ -512,7 +512,7 @@ Resources:
           Environment:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
-            - Name: ENVIRONMENT
+            - Name: Env
               Value: !Ref Environment
             - Name: CONVERSATIONS_TABLE
               Value: !Ref ConversationsTable
@@ -636,7 +636,7 @@ Resources:
       MemorySize: 512
       Environment:
         Variables:
-          ENVIRONMENT: !Ref Environment
+          Env: !Ref Environment
           CONVERSATIONS_TABLE: !Ref ConversationsTable
           CONVERSATION_HISTORY_TABLE: !Ref ConversationHistoryTable
           STEP_FUNCTION_ARN: !Ref ConversationStateMachine
