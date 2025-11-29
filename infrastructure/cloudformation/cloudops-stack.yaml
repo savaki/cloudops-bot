@@ -1,0 +1,795 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudOps Bot - Complete single-file CloudFormation template for Slack chatbot with Claude AI (Bedrock), Lambda, ECS Fargate, Step Functions, DynamoDB, and API Gateway'
+
+# =====================================================================================
+# CLOUDOPS BOT - COMPLETE INFRASTRUCTURE STACK
+# =====================================================================================
+#
+# ARCHITECTURE OVERVIEW:
+#   Slack → API Gateway → Lambda → Step Functions → ECS Fargate (Claude) → DynamoDB
+#
+# RESOURCES CREATED:
+#   - 1 VPC (10.0.0.0/16) with Internet Gateway
+#   - 2 Public subnets in different AZs
+#   - 1 Security group for ECS tasks (outbound HTTPS only)
+#   - 2 DynamoDB tables (conversations, history) with GSIs and TTL
+#   - 4 IAM roles (Lambda, ECS execution, ECS task, Step Functions)
+#   - 1 ECR repository for agent container images
+#   - 1 ECS cluster with Fargate capacity provider
+#   - 1 ECS task definition (1vCPU/2GB) with CloudWatch logging
+#   - 1 Step Functions state machine for task orchestration
+#   - 1 Lambda function (Go binary) for Slack webhook handling
+#   - 1 API Gateway REST API with /slack/events endpoint
+#
+# DEPLOYMENT PREREQUISITES:
+#   - AWS CLI v2 configured with appropriate credentials
+#   - Slack secrets in SSM Parameter Store:
+#       /cloudops/{ENV}/slack-bot-token
+#       /cloudops/{ENV}/slack-signing-key
+#   - Claude 3.5 Sonnet enabled in AWS Bedrock (us-east-1)
+#
+# DEPLOYMENT:
+#   ./deployments/deploy-stack.sh dev
+#
+#   OR manually:
+#   aws cloudformation create-stack \
+#     --stack-name cloudops-dev \
+#     --template-body file://infrastructure/cloudformation/cloudops-stack.yaml \
+#     --parameters ParameterKey=Environment,ParameterValue=dev \
+#     --capabilities CAPABILITY_NAMED_IAM
+#
+# POST-DEPLOYMENT:
+#   1. Build and push agent Docker image to ECR (see outputs: ECRRepositoryUri)
+#   2. Package and deploy Lambda binary (see deployments/package-lambda.sh)
+#   3. Configure Slack app with SlackWebhookUrl from stack outputs
+#
+# =====================================================================================
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Docker image tag for ECS agent
+
+Resources:
+  # ==================== VPC & Networking ====================
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-vpc-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-igw-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-public-subnet-1-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-public-subnet-2-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-public-rt-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'cloudops-ecs-sg-${Environment}'
+      GroupDescription: Security group for CloudOps Bot ECS tasks
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow outbound HTTPS for AWS APIs and Slack
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-ecs-sg-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== DynamoDB Tables ====================
+
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'cloudops-conversations-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conversation_id
+          AttributeType: S
+        - AttributeName: channel_id
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: conversation_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ChannelIndex
+          KeySchema:
+            - AttributeName: channel_id
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-conversations-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  ConversationHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'cloudops-conversation-history-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conversation_id
+          AttributeType: S
+        - AttributeName: message_index
+          AttributeType: N
+      KeySchema:
+        - AttributeName: conversation_id
+          KeyType: HASH
+        - AttributeName: message_index
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-conversation-history-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== IAM Roles ====================
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudops-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CloudOpsLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:Query'
+                Resource:
+                  - !GetAtt ConversationsTable.Arn
+                  - !Sub '${ConversationsTable.Arn}/index/*'
+                  - !GetAtt ConversationHistoryTable.Arn
+                  - !Sub '${ConversationHistoryTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-bot-token'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-signing-key'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudops-*'
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource:
+                  - !Ref ConversationStateMachine
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudops-ecs-execution-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: ECSTaskExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-bot-token'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-signing-key'
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudops-ecs-task-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CloudOpsReadOnlyPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:Query'
+                Resource:
+                  - !GetAtt ConversationsTable.Arn
+                  - !Sub '${ConversationsTable.Arn}/index/*'
+                  - !GetAtt ConversationHistoryTable.Arn
+                  - !Sub '${ConversationHistoryTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:Describe*'
+                  - 'ec2:GetConsoleOutput'
+                  - 'ec2:GetConsoleScreenshot'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ecs:Describe*'
+                  - 'ecs:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'rds:Describe*'
+                  - 'rds:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'lambda:Get*'
+                  - 'lambda:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:Describe*'
+                  - 'logs:GetLogEvents'
+                  - 'logs:FilterLogEvents'
+                  - 'logs:StartQuery'
+                  - 'logs:GetQueryResults'
+                  - 'logs:TestMetricFilter'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:Describe*'
+                  - 'cloudwatch:Get*'
+                  - 'cloudwatch:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                  - 's3:GetBucketLocation'
+                  - 's3:ListAllMyBuckets'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'iam:Get*'
+                  - 'iam:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:Describe*'
+                  - 'cloudformation:Get*'
+                  - 'cloudformation:List*'
+                Resource: '*'
+
+              # Bedrock - Invoke Claude models
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                Resource:
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-*'
+
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudops-stepfunctions-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: StepFunctionsECSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:RunTask'
+                  - 'ecs:StopTask'
+                  - 'ecs:DescribeTasks'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource:
+                  - !GetAtt ECSTaskRole.Arn
+                  - !GetAtt ECSTaskExecutionRole.Arn
+              - Effect: Allow
+                Action:
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource: '*'
+
+  # ==================== ECR Repository ====================
+
+  AgentECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub 'cloudops-agent-${Environment}'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # ==================== ECS Cluster & Task ====================
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub 'cloudops-cluster-${Environment}'
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  AgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/cloudops-agent-${Environment}'
+      RetentionInDays: 7
+
+  AgentTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'cloudops-agent-${Environment}'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '1024'
+      Memory: '2048'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: cloudops-agent
+          Image: !Sub '${AgentECRRepository.RepositoryUri}:${ImageTag}'
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AgentLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: agent
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: CONVERSATIONS_TABLE
+              Value: !Ref ConversationsTable
+            - Name: CONVERSATION_HISTORY_TABLE
+              Value: !Ref ConversationHistoryTable
+            - Name: INACTIVITY_TIMEOUT_MINUTES
+              Value: '30'
+            - Name: BEDROCK_MODEL_ID
+              Value: 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+          Secrets:
+            - Name: SLACK_BOT_TOKEN
+              ValueFrom: !Sub '/cloudops/${Environment}/slack-bot-token'
+            - Name: SLACK_SIGNING_KEY
+              ValueFrom: !Sub '/cloudops/${Environment}/slack-signing-key'
+
+  # ==================== Step Functions ====================
+
+  ConversationStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub 'cloudops-conversation-${Environment}'
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      DefinitionString:
+        Fn::Sub:
+          - |
+            {
+              "Comment": "CloudOps Bot conversation handler - spawns ECS task",
+              "StartAt": "RunConversationTask",
+              "States": {
+                "RunConversationTask": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::ecs:runTask.sync",
+                  "Parameters": {
+                    "Cluster": "${ClusterArn}",
+                    "TaskDefinition": "${TaskDef}",
+                    "LaunchType": "FARGATE",
+                    "NetworkConfiguration": {
+                      "AwsvpcConfiguration": {
+                        "Subnets": ${Subnets},
+                        "SecurityGroups": ["${SecurityGroup}"],
+                        "AssignPublicIp": "ENABLED"
+                      }
+                    },
+                    "Overrides": {
+                      "ContainerOverrides": [
+                        {
+                          "Name": "cloudops-agent",
+                          "Environment": [
+                            {
+                              "Name": "CONVERSATION_ID",
+                              "Value.$": "$.conversationId"
+                            },
+                            {
+                              "Name": "CHANNEL_ID",
+                              "Value.$": "$.channelId"
+                            },
+                            {
+                              "Name": "USER_ID",
+                              "Value.$": "$.userId"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "TimeoutSeconds": 3600,
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["States.TaskFailed"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 2,
+                      "BackoffRate": 1.5
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": ["States.ALL"],
+                      "Next": "TaskFailed"
+                    }
+                  ],
+                  "End": true
+                },
+                "TaskFailed": {
+                  "Type": "Fail",
+                  "Error": "ConversationTaskFailed",
+                  "Cause": "ECS task failed to complete successfully"
+                }
+              }
+            }
+          - ClusterArn: !GetAtt ECSCluster.Arn
+            TaskDef: !Ref AgentTaskDefinition
+            Subnets: !Sub
+              - '["${Subnet1}","${Subnet2}"]'
+              - Subnet1: !Ref PublicSubnet1
+                Subnet2: !Ref PublicSubnet2
+            SecurityGroup: !Ref ECSSecurityGroup
+
+  # ==================== Lambda Functions ====================
+
+  SlackHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/cloudops-slack-handler-${Environment}'
+      RetentionInDays: 7
+
+  SlackHandlerFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3677  # Custom runtime for Go Lambda
+    Properties:
+      FunctionName: !Sub 'cloudops-slack-handler-${Environment}'
+      Runtime: provided.al2
+      Handler: bootstrap
+      Architectures:
+        - arm64
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          CONVERSATIONS_TABLE: !Ref ConversationsTable
+          CONVERSATION_HISTORY_TABLE: !Ref ConversationHistoryTable
+          STEP_FUNCTION_ARN: !Ref ConversationStateMachine
+      Code:
+        ZipFile: |
+          # Placeholder - deploy with actual binary
+          echo "Deploy with: aws lambda update-function-code"
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudops-slack-handler-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== API Gateway ====================
+
+  SlackWebhookApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'cloudops-slack-webhook-${Environment}'
+      Description: Webhook for Slack events
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  SlackResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SlackWebhookApi
+      ParentId: !GetAtt SlackWebhookApi.RootResourceId
+      PathPart: slack
+
+  SlackEventsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SlackWebhookApi
+      ParentId: !Ref SlackResource
+      PathPart: events
+
+  SlackEventsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SlackWebhookApi
+      ResourceId: !Ref SlackEventsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SlackHandlerFunction.Arn}/invocations'
+
+  SlackHandlerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlackHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SlackWebhookApi}/*/*'
+
+  SlackApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SlackEventsMethod
+    Properties:
+      RestApiId: !Ref SlackWebhookApi
+      StageName: !Ref Environment
+
+  ApiGatewayLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayLogRole.Arn
+
+Outputs:
+  # VPC
+  VPCId:
+    Description: ID of the VPC
+    Value: !Ref VPC
+
+  PublicSubnet1Id:
+    Description: ID of public subnet 1
+    Value: !Ref PublicSubnet1
+
+  PublicSubnet2Id:
+    Description: ID of public subnet 2
+    Value: !Ref PublicSubnet2
+
+  ECSSecurityGroupId:
+    Description: ID of the ECS security group
+    Value: !Ref ECSSecurityGroup
+
+  # DynamoDB
+  ConversationsTableName:
+    Description: Name of the conversations table
+    Value: !Ref ConversationsTable
+
+  ConversationHistoryTableName:
+    Description: Name of the conversation history table
+    Value: !Ref ConversationHistoryTable
+
+  # IAM
+  LambdaExecutionRoleArn:
+    Description: ARN of the Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+  ECSTaskRoleArn:
+    Description: ARN of the ECS task role
+    Value: !GetAtt ECSTaskRole.Arn
+
+  # ECR
+  ECRRepositoryUri:
+    Description: URI of the ECR repository
+    Value: !GetAtt AgentECRRepository.RepositoryUri
+
+  # ECS
+  ECSClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref ECSCluster
+
+  TaskDefinitionArn:
+    Description: ARN of the agent task definition
+    Value: !Ref AgentTaskDefinition
+
+  # Step Functions
+  StateMachineArn:
+    Description: ARN of the conversation state machine
+    Value: !Ref ConversationStateMachine
+
+  # Lambda
+  SlackHandlerFunctionName:
+    Description: Name of the Slack event handler Lambda function
+    Value: !Ref SlackHandlerFunction
+
+  SlackHandlerFunctionArn:
+    Description: ARN of the Slack event handler Lambda function
+    Value: !GetAtt SlackHandlerFunction.Arn
+
+  # API Gateway
+  SlackWebhookUrl:
+    Description: Webhook URL for Slack events (use this in Slack app settings)
+    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/slack/events'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint
+    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'

@@ -1,2 +1,74 @@
-.gemini/
-gha-creds-*.json
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.cover
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.zip
+*.tar.gz
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# AWS
+.aws/
+credentials
+config
+
+# CloudFormation
+cfn-lint.log
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Temporary files
+*.tmp
+*.bak
+*~
+.DS_Store
+
+# IDE specific
+*.sublime-project
+*.sublime-workspace
+
+# Lambda packages
+lambda-*.zip
+
+# Go binaries
+/agent
+/slack-handler
