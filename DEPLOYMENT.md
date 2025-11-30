@@ -56,319 +56,201 @@ Complete step-by-step guide to deploy the CloudOps bot to AWS.
 
 ## Phase 2: AWS Infrastructure Setup
 
-### 2.1 Store Slack Tokens in Secrets Manager
+### 2.1 Store Slack Secrets in Parameter Store
+
+CloudOps Bot uses AWS Systems Manager Parameter Store (free tier) instead of Secrets Manager to store Slack credentials.
+
+**Using the Setup Script (Recommended)**:
 
 ```bash
-# Replace with your actual tokens
-BOT_TOKEN="xoxb-..."
-APP_TOKEN="xapp-..."
-SIGNING_KEY="..."
+# Interactive mode - prompts for each secret
+./deployments/setup-secrets.sh dev --interactive
 
-aws secretsmanager create-secret \
-  --name slack-bot-token \
-  --secret-string "$BOT_TOKEN"
-
-aws secretsmanager create-secret \
-  --name slack-app-token \
-  --secret-string "$APP_TOKEN"
-
-aws secretsmanager create-secret \
-  --name slack-signing-key \
-  --secret-string "$SIGNING_KEY"
+# Or provide values directly
+./deployments/setup-secrets.sh dev \
+  --slack-bot-token xoxb-your-token \
+  --slack-signing-key your-signing-secret
 ```
 
-### 2.2 Deploy VPC Stack
+**Manual Setup**:
+
+```bash
+ENV=dev
+
+# Store Slack bot token
+aws ssm put-parameter \
+  --name "/cloudops/${ENV}/slack-bot-token" \
+  --value "xoxb-your-token-here" \
+  --type SecureString \
+  --overwrite
+
+# Store Slack signing secret
+aws ssm put-parameter \
+  --name "/cloudops/${ENV}/slack-signing-key" \
+  --value "your-signing-secret-here" \
+  --type SecureString \
+  --overwrite
+```
+
+### 2.2 Enable AWS Bedrock Model Access
+
+CloudOps Bot uses AWS Bedrock (not Claude API) for AI capabilities.
+
+1. Go to AWS Console → Amazon Bedrock → Model Access
+2. Click **Request model access**
+3. Enable: **Anthropic Claude 3.5 Sonnet v2** (`anthropic.claude-3-5-sonnet-20241022-v2:0`)
+4. Wait 2-3 minutes for activation
+
+**Supported Regions**: us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1
+
+### 2.3 Deploy Infrastructure Stack
+
+#### Quick Deployment (Recommended)
+
+Deploy all infrastructure with a single command:
+
+```bash
+./deployments/deploy-stack.sh dev
+```
+
+This script will:
+- Validate that secrets exist in Parameter Store
+- Check AWS Bedrock model access
+- Deploy the complete CloudFormation stack (VPC, DynamoDB, IAM, ECR, ECS, Lambda, API Gateway, Step Functions)
+- Display the webhook URL for Slack configuration
+
+#### Full Deployment (Infrastructure + Code)
+
+For a complete end-to-end deployment including Lambda code and Docker image:
+
+```bash
+./deployments/deploy-stack.sh dev --full
+```
+
+This requires:
+- Go 1.21+ installed
+- Docker running
+- Adds 3-5 minutes to deployment time
+- Results in a fully functional deployment
+
+#### Manual Deployment (Advanced)
+
+If you prefer manual control:
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name cloudops-vpc-dev \
-  --template-body file://infrastructure/cloudformation/01-vpc.yaml \
-  --parameters ParameterKey=Environment,ParameterValue=dev
+  --stack-name cloudops-dev \
+  --template-body file://infrastructure/cloudformation/cloudops-stack.yaml \
+  --parameters ParameterKey=Env,ParameterValue=dev \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
 
-# Wait for completion
-aws cloudformation wait stack-create-complete --stack-name cloudops-vpc-dev
-```
-
-### 2.3 Deploy DynamoDB Stack
-
-```bash
-aws cloudformation create-stack \
-  --stack-name cloudops-dynamodb-dev \
-  --template-body file://infrastructure/cloudformation/02-dynamodb.yaml \
-  --parameters ParameterKey=Environment,ParameterValue=dev
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-dynamodb-dev
-```
-
-### 2.4 Get Output Values from DynamoDB Stack
-
-```bash
-# You'll need these for the IAM stack
-CONV_TABLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-dynamodb-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableArn`].OutputValue' \
-  --output text)
-
-HIST_TABLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-dynamodb-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ConversationHistoryTableArn`].OutputValue' \
-  --output text)
-
-echo "Conversations Table ARN: $CONV_TABLE_ARN"
-echo "History Table ARN: $HIST_TABLE_ARN"
-```
-
-### 2.5 Deploy IAM Stack
-
-```bash
-aws cloudformation create-stack \
-  --stack-name cloudops-iam-dev \
-  --template-body file://infrastructure/cloudformation/03-iam.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=dev \
-    ParameterKey=ConversationsTableArn,ParameterValue=$CONV_TABLE_ARN \
-    ParameterKey=ConversationHistoryTableArn,ParameterValue=$HIST_TABLE_ARN \
-  --capabilities CAPABILITY_NAMED_IAM
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-iam-dev
-```
-
-### 2.6 Deploy ECR Stack
-
-```bash
-aws cloudformation create-stack \
-  --stack-name cloudops-ecr-dev \
-  --template-body file://infrastructure/cloudformation/04-ecr.yaml \
-  --parameters ParameterKey=Environment,ParameterValue=dev
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-ecr-dev
-```
-
-### 2.7 Deploy ECS Stack
-
-```bash
-# Get values from previous stacks
-AGENT_REPO_URI=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-ecr-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`AgentRepositoryUri`].OutputValue' \
-  --output text)
-
-AGENT_ROLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-iam-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`CloudOpsAgentTaskRoleArn`].OutputValue' \
-  --output text)
-
-EXEC_ROLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-iam-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ECSTaskExecutionRoleArn`].OutputValue' \
-  --output text)
-
-CONV_TABLE=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-dynamodb-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableName`].OutputValue' \
-  --output text)
-
-HIST_TABLE=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-dynamodb-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ConversationHistoryTableName`].OutputValue' \
-  --output text)
-
-# Deploy ECS
-aws cloudformation create-stack \
-  --stack-name cloudops-ecs-dev \
-  --template-body file://infrastructure/cloudformation/05-ecs.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=dev \
-    ParameterKey=AgentRepositoryUri,ParameterValue=$AGENT_REPO_URI \
-    ParameterKey=AgentTaskRoleArn,ParameterValue=$AGENT_ROLE_ARN \
-    ParameterKey=ECSTaskExecutionRoleArn,ParameterValue=$EXEC_ROLE_ARN \
-    ParameterKey=ConversationsTableName,ParameterValue=$CONV_TABLE \
-    ParameterKey=ConversationHistoryTableName,ParameterValue=$HIST_TABLE
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-ecs-dev
-```
-
-### 2.8 Deploy Step Functions Stack
-
-```bash
-# Get values
-ECS_CLUSTER_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-ecs-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ClusterArn`].OutputValue' \
-  --output text)
-
-TASK_DEF_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-ecs-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`TaskDefinitionArn`].OutputValue' \
-  --output text)
-
-STEPFUNC_ROLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-iam-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`StepFunctionsExecutionRoleArn`].OutputValue' \
-  --output text)
-
-AGENT_SG_ID=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-vpc-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`AgentSecurityGroupId`].OutputValue' \
-  --output text)
-
-SUBNET1=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-vpc-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' \
-  --output text)
-
-SUBNET2=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-vpc-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet2Id`].OutputValue' \
-  --output text)
-
-# Deploy Step Functions
-aws cloudformation create-stack \
-  --stack-name cloudops-stepfunctions-dev \
-  --template-body file://infrastructure/cloudformation/06-stepfunctions.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=dev \
-    ParameterKey=ECSClusterArn,ParameterValue=$ECS_CLUSTER_ARN \
-    ParameterKey=ECSTaskDefinitionArn,ParameterValue=$TASK_DEF_ARN \
-    ParameterKey=StepFunctionsRoleArn,ParameterValue=$STEPFUNC_ROLE_ARN \
-    ParameterKey=ConversationsTableName,ParameterValue=$CONV_TABLE \
-    ParameterKey=AgentSecurityGroupId,ParameterValue=$AGENT_SG_ID \
-    ParameterKey=PublicSubnet1,ParameterValue=$SUBNET1 \
-    ParameterKey=PublicSubnet2,ParameterValue=$SUBNET2
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-stepfunctions-dev
-```
-
-### 2.9 Deploy Lambda Stack
-
-```bash
-# Get values
-LAMBDA_ROLE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-iam-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`LambdaExecutionRoleArn`].OutputValue' \
-  --output text)
-
-STEPFUNC_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-stepfunctions-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`StateMachineArn`].OutputValue' \
-  --output text)
-
-# Deploy Lambda
-aws cloudformation create-stack \
-  --stack-name cloudops-lambda-dev \
-  --template-body file://infrastructure/cloudformation/07-lambda.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=dev \
-    ParameterKey=LambdaExecutionRoleArn,ParameterValue=$LAMBDA_ROLE_ARN \
-    ParameterKey=StepFunctionsArn,ParameterValue=$STEPFUNC_ARN \
-    ParameterKey=ConversationsTableName,ParameterValue=$CONV_TABLE
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-lambda-dev
-```
-
-### 2.10 (Optional) Deploy API Gateway Stack
-
-Only if you're using Events API instead of Socket Mode:
-
-```bash
-# Get values
-LAMBDA_ARN=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-lambda-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`SlackHandlerFunctionArn`].OutputValue' \
-  --output text)
-
-LAMBDA_NAME=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-lambda-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`SlackHandlerFunctionName`].OutputValue' \
-  --output text)
-
-aws cloudformation create-stack \
-  --stack-name cloudops-apigateway-dev \
-  --template-body file://infrastructure/cloudformation/08-apigateway.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=dev \
-    ParameterKey=SlackHandlerFunctionArn,ParameterValue=$LAMBDA_ARN \
-    ParameterKey=SlackHandlerFunctionName,ParameterValue=$LAMBDA_NAME
-
-aws cloudformation wait stack-create-complete --stack-name cloudops-apigateway-dev
+# Wait for completion (takes 3-5 minutes)
+aws cloudformation wait stack-create-complete --stack-name cloudops-dev --region us-east-1
 
 # Get webhook URL
-WEBHOOK_URL=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-apigateway-dev \
+aws cloudformation describe-stacks \
+  --stack-name cloudops-dev \
+  --region us-east-1 \
   --query 'Stacks[0].Outputs[?OutputKey==`SlackWebhookUrl`].OutputValue' \
-  --output text)
+  --output text
+```
 
-echo "Slack webhook URL: $WEBHOOK_URL"
+### 2.4 What Gets Deployed
+
+The single CloudFormation stack (`cloudops-stack.yaml`) creates all required resources:
+
+**Networking**:
+- VPC (10.0.0.0/16) with 2 public subnets across availability zones
+- Internet Gateway and route tables
+- Security group for ECS agents
+
+**Data Storage**:
+- `cloudops-conversations-{env}` DynamoDB table (with GSIs for channel and status queries, TTL enabled)
+- `cloudops-conversation-history-{env}` DynamoDB table (with TTL enabled)
+
+**IAM Roles**:
+- Lambda execution role (access to DynamoDB, Step Functions, Parameter Store, CloudWatch)
+- ECS task execution role (pull images from ECR, write logs)
+- ECS task role (access to DynamoDB, Bedrock, CloudWatch)
+- Step Functions execution role (start ECS tasks)
+
+**Container Infrastructure**:
+- ECR repository for agent Docker images (with lifecycle policy to keep last 10 images)
+- ECS Fargate cluster
+- ECS task definition (1 vCPU, 2GB RAM, arm64)
+
+**Orchestration**:
+- Step Functions state machine for ECS task orchestration
+
+**Event Handling**:
+- Lambda function for Slack webhook handling (Go binary, arm64, placeholder code)
+- API Gateway REST API with `/slack/events` endpoint
+
+### 2.5 Deployment Outputs
+
+After successful deployment, you'll see:
+
+```
+======================================================================
+✅ CloudFormation Stack Deployed Successfully
+======================================================================
+
+Stack Outputs:
+  ECR Repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/cloudops-dev
+  Lambda Function: cloudops-slack-handler-dev
+  Webhook URL: https://abc123.execute-api.us-east-1.amazonaws.com/dev/slack/events
+
+Next steps:
+  1. Build and push agent Docker image:
+     ./deployments/build-agent.sh dev us-east-1
+
+  2. Package and deploy Lambda function:
+     ./deployments/package-lambda.sh dev slack-handler
+
+  3. Configure Slack app event subscription:
+     https://abc123.execute-api.us-east-1.amazonaws.com/dev/slack/events
+
+Or re-run with --full flag for automated deployment:
+  ./deployments/deploy-stack.sh dev --full
 ```
 
 ## Phase 3: Build & Deploy Container
 
-### 3.1 Implement Agent Container
+The agent container runs in ECS Fargate and handles the actual conversation processing using AWS Bedrock.
 
-Edit `cmd/agent/main.go` with your Claude API integration.
-
-### 3.2 Build and Push Container
+### 3.1 Build and Push Container
 
 ```bash
-# Make script executable
-chmod +x deployments/build-agent.sh
-
-# Build and push to ECR
-./deployments/build-agent.sh dev latest
+# Build and push to ECR (automatically tags with 'latest' and git commit hash)
+./deployments/build-agent.sh dev us-east-1
 ```
 
-### 3.3 Update ECS Task Definition
+This script will:
+- Authenticate with ECR
+- Build the Docker image from `deployments/Dockerfile.agent`
+- Tag with `latest` and current git commit hash
+- Push both tags to ECR
 
-The ECS stack created the task definition with a placeholder image. You need to update it to use your new image:
-
-```bash
-# Get the cluster and task definition
-CLUSTER=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-ecs-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`ClusterName`].OutputValue' \
-  --output text)
-
-TASK_FAMILY=$(aws cloudformation describe-stacks \
-  --stack-name cloudops-ecs-dev \
-  --query 'Stacks[0].Outputs[?OutputKey==`TaskDefinitionFamily`].OutputValue' \
-  --output text)
-
-# Get current task definition
-TASK_DEF=$(aws ecs describe-task-definition --task-definition $TASK_FAMILY --query 'taskDefinition')
-
-# Update the image in the container definition
-UPDATED_TASK_DEF=$(echo $TASK_DEF | jq '.containerDefinitions[0].image = "'$AGENT_REPO_URI':latest"')
-
-# Register new task definition (remove some CloudFormation fields first)
-echo "$UPDATED_TASK_DEF" | jq '{
-  family: .family,
-  networkMode: .networkMode,
-  requiresCompatibilities: .requiresCompatibilities,
-  cpu: .cpu,
-  memory: .memory,
-  taskRoleArn: .taskRoleArn,
-  executionRoleArn: .executionRoleArn,
-  containerDefinitions: .containerDefinitions
-}' > /tmp/task-def.json
-
-aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
-```
+**Note**: If you used `--full` flag in Phase 2, this step is already complete.
 
 ## Phase 4: Deploy Lambda Handler
 
-### 4.1 Implement Lambda Handler
+The Lambda function handles incoming Slack events and triggers Step Functions executions.
 
-Edit `cmd/slack-handler/main.go` with Slack event handling logic.
-
-### 4.2 Package and Deploy
+### 4.1 Package and Deploy
 
 ```bash
-# Make script executable
-chmod +x deployments/package-lambda.sh
-
-# Build and package
+# Build, package, and deploy Lambda function
 ./deployments/package-lambda.sh dev slack-handler
 ```
+
+This script will:
+- Build the Go binary for Linux arm64
+- Create a deployment ZIP package with the `bootstrap` binary
+- Update the Lambda function code
+
+**Note**: If you used `--full` flag in Phase 2, this step is already complete.
 
 ## Phase 5: Configure Slack Webhook (if using API Gateway)
 
@@ -413,43 +295,83 @@ aws logs filter-log-events \
 
 ## Troubleshooting
 
+### CloudFormation stack in ROLLBACK_COMPLETE state
+
+If a previous deployment failed, the stack may be in `ROLLBACK_COMPLETE` state.
+
+**Solution**:
+```bash
+# Use the cleanup script
+./deployments/cleanup-stack.sh dev
+
+# Or manually delete the stack
+aws cloudformation delete-stack --stack-name cloudops-dev --region us-east-1
+aws cloudformation wait stack-delete-complete --stack-name cloudops-dev --region us-east-1
+
+# Then retry deployment
+./deployments/deploy-stack.sh dev
+```
+
+### Bedrock model not enabled
+
+If you see "AWS Bedrock Claude 3.5 Sonnet v2 is NOT enabled", you need to enable model access:
+
+1. Go to AWS Console → Amazon Bedrock → Model Access
+2. Click **Request model access**
+3. Enable: **Anthropic Claude 3.5 Sonnet v2**
+4. Wait 2-3 minutes for activation
+5. Re-run deployment script
+
+### Docker not running (when using --full flag)
+
+If you see "Docker is not running":
+
+1. Start Docker Desktop (or Docker daemon)
+2. Verify: `docker info`
+3. Re-run deployment
+
 ### Bot not responding
 
-1. Check Lambda logs for errors
-2. Verify Slack tokens are stored in Secrets Manager
+1. Check Lambda logs for errors: `aws logs tail /aws/lambda/cloudops-slack-handler-dev --follow`
+2. Verify Slack tokens are stored in Parameter Store: `aws ssm get-parameter --name /cloudops/dev/slack-bot-token`
 3. Check that bot is installed in workspace
 4. Verify Slack app scopes are correct
+5. Verify webhook URL is configured in Slack Event Subscriptions
 
 ### Container fails to start
 
-1. Check ECS agent logs
-2. Verify DynamoDB table exists and is accessible
-3. Check that environment variables are set in task definition
-4. Verify IAM role has required permissions
+1. Check ECS agent logs: `aws logs tail /ecs/cloudops-agent-dev --follow`
+2. Verify Docker image exists in ECR
+3. Verify DynamoDB tables exist and are accessible
+4. Check IAM role has Bedrock permissions
+5. Verify Bedrock model is enabled in the region
 
-### CloudFormation stack failed
+### Deployment fails with permission errors
 
-1. Check stack events: `aws cloudformation describe-stack-events --stack-name <stack-name>`
-2. Look for the specific error in the events
-3. Fix the issue and delete/recreate the stack
+Verify your AWS credentials have permissions for:
+- CloudFormation (create/update/delete stacks)
+- IAM (create roles and policies)
+- VPC, EC2, ECS, Lambda, DynamoDB, Step Functions, ECR, API Gateway
+- Parameter Store (read parameters)
+- Bedrock (invoke model)
 
 ## Cleanup
 
 To remove all resources:
 
 ```bash
-# Delete stacks in reverse order
-for stack in cloudops-apigateway-dev cloudops-lambda-dev cloudops-stepfunctions-dev \
-             cloudops-ecs-dev cloudops-ecr-dev cloudops-iam-dev cloudops-dynamodb-dev cloudops-vpc-dev; do
-  aws cloudformation delete-stack --stack-name $stack
-  aws cloudformation wait stack-delete-complete --stack-name $stack
-done
+# Use the cleanup script
+./deployments/cleanup-stack.sh dev
 
-# Delete Secrets Manager secrets
-aws secretsmanager delete-secret --secret-id slack-bot-token --force-delete-without-recovery
-aws secretsmanager delete-secret --secret-id slack-app-token --force-delete-without-recovery
-aws secretsmanager delete-secret --secret-id slack-signing-key --force-delete-without-recovery
+# Or manually delete the stack
+aws cloudformation delete-stack --stack-name cloudops-dev --region us-east-1
+aws cloudformation wait stack-delete-complete --stack-name cloudops-dev --region us-east-1
 ```
+
+**Note**: The following resources are NOT automatically deleted:
+- Parameter Store secrets (must delete manually if desired)
+- CloudWatch log groups (subject to retention policy)
+- ECR images older than the 10 most recent (managed by lifecycle policy)
 
 ## Next Steps
 

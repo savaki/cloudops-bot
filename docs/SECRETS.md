@@ -5,7 +5,7 @@ This document lists all required secrets and where they're used.
 ## Required Secrets
 
 ### 1. Slack Bot Token
-**Parameter Name**: `/cloudops/{environment}/slack-bot-token`
+**Parameter Name**: `/cloudops/{env}/slack-bot-token`
 **Format**: `xoxb-...`
 **Used By**: Lambda Handler, ECS Agent
 **Purpose**:
@@ -20,7 +20,7 @@ This document lists all required secrets and where they're used.
 4. Find "Bot User OAuth Token"
 
 ### 2. Slack Signing Secret
-**Parameter Name**: `/cloudops/{environment}/slack-signing-key`
+**Parameter Name**: `/cloudops/{env}/slack-signing-key`
 **Format**: Random hex string (e.g., `abc123def456...`)
 **Used By**: Lambda Handler
 **Purpose**:
@@ -120,11 +120,11 @@ Or use the setup script:
 ## IAM Permissions
 
 ### Lambda Handler
-- ✅ `/cloudops/{environment}/slack-bot-token` - Posts acknowledgment messages
-- ✅ `/cloudops/{environment}/slack-signing-key` - Validates webhooks
+- ✅ `/cloudops/{env}/slack-bot-token` - Posts acknowledgment messages
+- ✅ `/cloudops/{env}/slack-signing-key` - Validates webhooks
 
 ### ECS Agent
-- ✅ `/cloudops/{environment}/slack-bot-token` - Posts conversation responses
+- ✅ `/cloudops/{env}/slack-bot-token` - Posts conversation responses
 - ✅ `bedrock:InvokeModel` - Calls Claude via Bedrock (IAM-based, no API key!)
 
 ### Principle of Least Privilege
@@ -133,34 +133,106 @@ Each component only has permissions for the secrets it actually uses.
 ## Troubleshooting
 
 ### Error: "Parameter not found"
-Run the setup script:
+**Cause**: Slack secrets not configured in Parameter Store
+
+**Solution**:
 ```bash
 ./deployments/setup-secrets.sh dev --interactive
 ```
 
 ### Error: "Access Denied" (Bedrock)
-Enable Bedrock model access:
-1. Go to AWS Bedrock console
-2. Click "Model access" → "Modify model access"
+**Cause**: Bedrock model access not enabled
+
+**Solution**:
+1. Go to AWS Bedrock console → Model Access
+2. Click "Modify model access"
 3. Enable "Claude 3.5 Sonnet v2"
 4. Wait for approval (usually instant)
+5. Verify: `aws bedrock list-foundation-models --region us-east-1 | grep claude-3-5-sonnet`
 
 ### Error: "Access Denied" (Parameter Store)
-Ensure your AWS credentials have `ssm:PutParameter` and `ssm:GetParameter` permissions.
+**Cause**: Insufficient IAM permissions
 
-### Need to Update a Secret
+**Solution**:
+Ensure your AWS credentials have these permissions:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "ssm:PutParameter",
+      "ssm:GetParameter",
+      "ssm:DescribeParameters"
+    ],
+    "Resource": "arn:aws:ssm:*:*:parameter/cloudops/*"
+  }]
+}
+```
+
+### Error: "Invalid Slack token"
+**Cause**: Token revoked or incorrect scope
+
+**Solution**:
+1. Go to https://api.slack.com/apps
+2. Reinstall app to workspace
+3. Copy new Bot User OAuth Token
+4. Update parameter:
 ```bash
 ./deployments/setup-secrets.sh dev --update \
   --slack-bot-token "xoxb-new-token"
 ```
 
+### Error: "Region not supported"
+**Cause**: Bedrock not available in your AWS region
+
+**Solution**:
+Use a supported region:
+- us-east-1 (recommended)
+- us-west-2
+- eu-central-1
+- ap-southeast-1
+- ap-northeast-1
+
+Set region before deploying:
+```bash
+export AWS_REGION=us-east-1
+./deployments/deploy-stack.sh dev
+```
+
+### Secret Rotation
+**Best Practice**: Rotate secrets every 90 days
+
+**Process**:
+1. Generate new token in Slack
+2. Update Parameter Store:
+   ```bash
+   ./deployments/setup-secrets.sh dev --update \
+     --slack-bot-token "xoxb-new-token"
+   ```
+3. Test immediately - no redeployment needed (Lambda reads from Parameter Store on each invocation)
+
 ### View Current Values
 ```bash
+# View Slack bot token
 aws ssm get-parameter \
   --name /cloudops/dev/slack-bot-token \
   --with-decryption \
   --query 'Parameter.Value' \
   --output text
+
+# View Slack signing key
+aws ssm get-parameter \
+  --name /cloudops/dev/slack-signing-key \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text
+```
+
+### Delete All Secrets (Cleanup)
+```bash
+aws ssm delete-parameter --name /cloudops/dev/slack-bot-token
+aws ssm delete-parameter --name /cloudops/dev/slack-signing-key
 ```
 
 ## Migration from Claude API
