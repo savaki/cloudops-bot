@@ -330,28 +330,67 @@ cloudops-bot/
 
 ### Prerequisites for Deployment
 
-- AWS IAM permissions for CloudFormation, Lambda, ECS, DynamoDB, ECR, etc.
-- Slack tokens configured in AWS Secrets Manager
-- Docker Hub or ECR access for container images
+**Required**:
+- AWS CLI v2 configured with credentials
+- Go 1.21+ (for building Lambda and agent binaries)
+- Docker (for building container images)
+- AWS IAM permissions for: CloudFormation, Lambda, ECS, DynamoDB, ECR, IAM, VPC, Step Functions, API Gateway, Parameter Store, Bedrock
+- Slack workspace with admin access
+
+**AWS Region Requirements**:
+- Must use a region with AWS Bedrock support
+- Supported regions: us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1
+- Default: us-east-1
+
+### Setup Secrets
+
+Store Slack credentials in Parameter Store (free tier):
+
+```bash
+# Interactive mode (recommended)
+./deployments/setup-secrets.sh dev --interactive
+
+# Or provide values directly
+./deployments/setup-secrets.sh dev \
+  --slack-bot-token xoxb-your-token \
+  --slack-signing-key your-signing-secret
+```
+
+### Enable AWS Bedrock
+
+CloudOps Bot uses AWS Bedrock (not Claude API):
+
+1. Go to AWS Console → Amazon Bedrock → Model Access
+2. Enable: **Anthropic Claude 3.5 Sonnet v2** (`anthropic.claude-3-5-sonnet-20241022-v2:0`)
+3. Wait 2-3 minutes for activation
 
 ### Quick Deployment (Recommended)
 
-Use the provided deployment script to deploy the entire stack at once:
+**Option 1: Infrastructure only** (requires separate Lambda/Docker builds):
 
 ```bash
-# Deploy complete infrastructure (uses default VPC)
 ./deployments/deploy-stack.sh dev
-
-# Or specify custom networking
-./deployments/deploy-stack.sh dev "subnet-abc123,subnet-def456" sg-xyz789
 ```
 
-The script will:
-1. ✅ Create all infrastructure resources in a single CloudFormation stack
-2. ✅ Automatically detect default VPC and subnets
-3. ✅ Create or reuse security groups
-4. ✅ Validate that required secrets exist
-5. ✅ Display webhook URL for Slack configuration
+Then manually run:
+```bash
+./deployments/build-agent.sh dev us-east-1
+./deployments/package-lambda.sh dev slack-handler
+```
+
+**Option 2: Full deployment** (infrastructure + code in one command):
+
+```bash
+./deployments/deploy-stack.sh dev --full
+```
+
+This will:
+1. ✅ Validate secrets exist in Parameter Store
+2. ✅ Check AWS Bedrock model access (fails if not enabled)
+3. ✅ Deploy CloudFormation stack (VPC, DynamoDB, IAM, ECR, ECS, Lambda, API Gateway, Step Functions)
+4. ✅ Build and deploy Lambda function
+5. ✅ Build and push agent Docker image to ECR
+6. ✅ Display webhook URL for Slack configuration
 
 ### Manual Deployment (Advanced)
 
@@ -360,44 +399,42 @@ If you prefer manual control:
 ```bash
 ENV=dev
 AWS_REGION=us-east-1
-SUBNET_IDS="subnet-abc123,subnet-def456"
-SECURITY_GROUP_ID="sg-xyz789"
 
 # Deploy the complete stack
 aws cloudformation create-stack \
   --stack-name cloudops-${ENV} \
   --template-body file://infrastructure/cloudformation/cloudops-stack.yaml \
-  --parameters \
-    ParameterKey=Environment,ParameterValue=${ENV} \
-    ParameterKey=SubnetIds,ParameterValue=\"${SUBNET_IDS}\" \
-    ParameterKey=SecurityGroupId,ParameterValue=${SECURITY_GROUP_ID} \
+  --parameters ParameterKey=Env,ParameterValue=${ENV} \
   --capabilities CAPABILITY_NAMED_IAM \
   --region ${AWS_REGION}
 
-# Wait for stack creation
+# Wait for stack creation (takes 3-5 minutes)
 aws cloudformation wait stack-create-complete \
   --stack-name cloudops-${ENV} \
   --region ${AWS_REGION}
-```
 
-### Post-Deployment Steps
-
-After the stack is created:
-
-```bash
-ENV=dev
-
-# 1. Build and push the agent Docker image
-./deployments/build-agent.sh ${ENV}
-
-# 2. Package and deploy Lambda function
-./deployments/package-lambda.sh ${ENV} slack-handler
-
-# 3. Get the webhook URL for Slack
+# Get the webhook URL for Slack configuration
 aws cloudformation describe-stacks \
   --stack-name cloudops-${ENV} \
   --query 'Stacks[0].Outputs[?OutputKey==`SlackWebhookUrl`].OutputValue' \
   --output text
+```
+
+### Configure Slack Webhook
+
+After deployment, configure your Slack app:
+
+1. Go to Slack App Settings → Event Subscriptions
+2. Enable Events
+3. Paste the webhook URL from deployment output
+4. Subscribe to bot events: `app_mention`
+
+### Cleanup
+
+Remove all resources:
+
+```bash
+./deployments/cleanup-stack.sh dev
 ```
 
 ## Testing

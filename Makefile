@@ -11,21 +11,26 @@ help:
 	@echo "  make package-lambda       Package Lambda for deployment"
 	@echo ""
 	@echo "Infrastructure:"
-	@echo "  make deploy-vpc           Deploy VPC stack"
-	@echo "  make deploy-dynamodb      Deploy DynamoDB stack"
-	@echo "  make deploy-iam           Deploy IAM stack"
-	@echo "  make deploy-ecr           Deploy ECR stack"
-	@echo "  make deploy-ecs           Deploy ECS stack"
-	@echo "  make deploy-stepfunc      Deploy Step Functions stack"
-	@echo "  make deploy-lambda        Deploy Lambda stack"
-	@echo "  make deploy-apigateway    Deploy API Gateway stack"
-	@echo "  make deploy-all           Deploy all stacks"
+	@echo "  make deploy-stack         Deploy infrastructure (VPC, DynamoDB, IAM, ECR, ECS, etc.)"
+	@echo "  make deploy-full          Deploy infrastructure + build Lambda + build Docker image"
+	@echo "  make cleanup              Clean up all AWS resources"
 	@echo ""
 	@echo "Development:"
 	@echo "  make test                 Run tests"
 	@echo "  make lint                 Run linter"
 	@echo "  make fmt                  Format code"
 	@echo "  make deps                 Download dependencies"
+	@echo ""
+	@echo "Local Testing:"
+	@echo "  make local-start          Start local DynamoDB"
+	@echo "  make local-setup          Setup local DynamoDB tables"
+	@echo "  make local-test           Run interactive agent testing"
+	@echo "  make local-docker         Build and test agent Docker container"
+	@echo "  make local-rebuild        Quick rebuild and test Docker container"
+	@echo "  make local-stop           Stop local services"
+	@echo ""
+	@echo "Slack Configuration:"
+	@echo "  make slack-manifest       Generate Slack app manifest from deployed stack"
 	@echo ""
 	@echo "Monitoring:"
 	@echo "  make logs-lambda          Show Lambda logs"
@@ -58,130 +63,19 @@ package-lambda: build-lambda
 
 # Infrastructure deployment
 ENV ?= dev
+AWS_REGION ?= us-east-1
 
-deploy-vpc:
-	@echo "Deploying VPC stack..."
-	@aws cloudformation create-stack \
-		--stack-name cloudops-vpc-$(ENV) \
-		--template-body file://infrastructure/cloudformation/01-vpc.yaml \
-		--parameters ParameterKey=Environment,ParameterValue=$(ENV)
-	@aws cloudformation wait stack-create-complete --stack-name cloudops-vpc-$(ENV)
-	@echo "VPC stack deployed"
+deploy-stack:
+	@echo "Deploying CloudOps infrastructure stack..."
+	@./deployments/deploy-stack.sh $(ENV)
 
-deploy-dynamodb:
-	@echo "Deploying DynamoDB stack..."
-	@aws cloudformation create-stack \
-		--stack-name cloudops-dynamodb-$(ENV) \
-		--template-body file://infrastructure/cloudformation/02-dynamodb.yaml \
-		--parameters ParameterKey=Environment,ParameterValue=$(ENV)
-	@aws cloudformation wait stack-create-complete --stack-name cloudops-dynamodb-$(ENV)
-	@echo "DynamoDB stack deployed"
+deploy-full:
+	@echo "Deploying CloudOps infrastructure + building code..."
+	@./deployments/deploy-stack.sh $(ENV) --full
 
-deploy-iam:
-	@echo "Getting DynamoDB table ARNs..."
-	@export CONV_ARN=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableArn`].OutputValue' --output text) && \
-	export HIST_ARN=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationHistoryTableArn`].OutputValue' --output text) && \
-	echo "Deploying IAM stack..." && \
-	aws cloudformation create-stack \
-		--stack-name cloudops-iam-$(ENV) \
-		--template-body file://infrastructure/cloudformation/03-iam.yaml \
-		--parameters \
-			ParameterKey=Environment,ParameterValue=$(ENV) \
-			ParameterKey=ConversationsTableArn,ParameterValue=$$CONV_ARN \
-			ParameterKey=ConversationHistoryTableArn,ParameterValue=$$HIST_ARN \
-		--capabilities CAPABILITY_NAMED_IAM && \
-	aws cloudformation wait stack-create-complete --stack-name cloudops-iam-$(ENV) && \
-	echo "IAM stack deployed"
-
-deploy-ecr:
-	@echo "Deploying ECR stack..."
-	@aws cloudformation create-stack \
-		--stack-name cloudops-ecr-$(ENV) \
-		--template-body file://infrastructure/cloudformation/04-ecr.yaml \
-		--parameters ParameterKey=Environment,ParameterValue=$(ENV)
-	@aws cloudformation wait stack-create-complete --stack-name cloudops-ecr-$(ENV)
-	@echo "ECR stack deployed"
-
-deploy-ecs:
-	@echo "Getting stack outputs..."
-	@export AGENT_REPO=$$(aws cloudformation describe-stacks --stack-name cloudops-ecr-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`AgentRepositoryUri`].OutputValue' --output text) && \
-	export AGENT_ROLE=$$(aws cloudformation describe-stacks --stack-name cloudops-iam-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`CloudOpsAgentTaskRoleArn`].OutputValue' --output text) && \
-	export EXEC_ROLE=$$(aws cloudformation describe-stacks --stack-name cloudops-iam-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ECSTaskExecutionRoleArn`].OutputValue' --output text) && \
-	export CONV_TABLE=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableName`].OutputValue' --output text) && \
-	export HIST_TABLE=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationHistoryTableName`].OutputValue' --output text) && \
-	echo "Deploying ECS stack..." && \
-	aws cloudformation create-stack \
-		--stack-name cloudops-ecs-$(ENV) \
-		--template-body file://infrastructure/cloudformation/05-ecs.yaml \
-		--parameters \
-			ParameterKey=Environment,ParameterValue=$(ENV) \
-			ParameterKey=AgentRepositoryUri,ParameterValue=$$AGENT_REPO \
-			ParameterKey=AgentTaskRoleArn,ParameterValue=$$AGENT_ROLE \
-			ParameterKey=ECSTaskExecutionRoleArn,ParameterValue=$$EXEC_ROLE \
-			ParameterKey=ConversationsTableName,ParameterValue=$$CONV_TABLE \
-			ParameterKey=ConversationHistoryTableName,ParameterValue=$$HIST_TABLE && \
-	aws cloudformation wait stack-create-complete --stack-name cloudops-ecs-$(ENV) && \
-	echo "ECS stack deployed"
-
-deploy-stepfunc:
-	@echo "Getting stack outputs..."
-	@export ECS_CLUSTER=$$(aws cloudformation describe-stacks --stack-name cloudops-ecs-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ClusterArn`].OutputValue' --output text) && \
-	export TASK_DEF=$$(aws cloudformation describe-stacks --stack-name cloudops-ecs-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`TaskDefinitionArn`].OutputValue' --output text) && \
-	export SF_ROLE=$$(aws cloudformation describe-stacks --stack-name cloudops-iam-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`StepFunctionsExecutionRoleArn`].OutputValue' --output text) && \
-	export AGENT_SG=$$(aws cloudformation describe-stacks --stack-name cloudops-vpc-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`AgentSecurityGroupId`].OutputValue' --output text) && \
-	export SUBNET1=$$(aws cloudformation describe-stacks --stack-name cloudops-vpc-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet1Id`].OutputValue' --output text) && \
-	export SUBNET2=$$(aws cloudformation describe-stacks --stack-name cloudops-vpc-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`PublicSubnet2Id`].OutputValue' --output text) && \
-	export CONV_TABLE=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableName`].OutputValue' --output text) && \
-	echo "Deploying Step Functions stack..." && \
-	aws cloudformation create-stack \
-		--stack-name cloudops-stepfunctions-$(ENV) \
-		--template-body file://infrastructure/cloudformation/06-stepfunctions.yaml \
-		--parameters \
-			ParameterKey=Environment,ParameterValue=$(ENV) \
-			ParameterKey=ECSClusterArn,ParameterValue=$$ECS_CLUSTER \
-			ParameterKey=ECSTaskDefinitionArn,ParameterValue=$$TASK_DEF \
-			ParameterKey=StepFunctionsRoleArn,ParameterValue=$$SF_ROLE \
-			ParameterKey=ConversationsTableName,ParameterValue=$$CONV_TABLE \
-			ParameterKey=AgentSecurityGroupId,ParameterValue=$$AGENT_SG \
-			ParameterKey=PublicSubnet1,ParameterValue=$$SUBNET1 \
-			ParameterKey=PublicSubnet2,ParameterValue=$$SUBNET2 && \
-	aws cloudformation wait stack-create-complete --stack-name cloudops-stepfunctions-$(ENV) && \
-	echo "Step Functions stack deployed"
-
-deploy-lambda:
-	@echo "Getting stack outputs..."
-	@export LAMBDA_ROLE=$$(aws cloudformation describe-stacks --stack-name cloudops-iam-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`LambdaExecutionRoleArn`].OutputValue' --output text) && \
-	export SF_ARN=$$(aws cloudformation describe-stacks --stack-name cloudops-stepfunctions-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`StateMachineArn`].OutputValue' --output text) && \
-	export CONV_TABLE=$$(aws cloudformation describe-stacks --stack-name cloudops-dynamodb-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`ConversationsTableName`].OutputValue' --output text) && \
-	echo "Deploying Lambda stack..." && \
-	aws cloudformation create-stack \
-		--stack-name cloudops-lambda-$(ENV) \
-		--template-body file://infrastructure/cloudformation/07-lambda.yaml \
-		--parameters \
-			ParameterKey=Environment,ParameterValue=$(ENV) \
-			ParameterKey=LambdaExecutionRoleArn,ParameterValue=$$LAMBDA_ROLE \
-			ParameterKey=StepFunctionsArn,ParameterValue=$$SF_ARN \
-			ParameterKey=ConversationsTableName,ParameterValue=$$CONV_TABLE && \
-	aws cloudformation wait stack-create-complete --stack-name cloudops-lambda-$(ENV) && \
-	echo "Lambda stack deployed"
-
-deploy-apigateway:
-	@echo "Getting Lambda outputs..."
-	@export LAMBDA_ARN=$$(aws cloudformation describe-stacks --stack-name cloudops-lambda-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`SlackHandlerFunctionArn`].OutputValue' --output text) && \
-	export LAMBDA_NAME=$$(aws cloudformation describe-stacks --stack-name cloudops-lambda-$(ENV) --query 'Stacks[0].Outputs[?OutputKey==`SlackHandlerFunctionName`].OutputValue' --output text) && \
-	echo "Deploying API Gateway stack..." && \
-	aws cloudformation create-stack \
-		--stack-name cloudops-apigateway-$(ENV) \
-		--template-body file://infrastructure/cloudformation/08-apigateway.yaml \
-		--parameters \
-			ParameterKey=Environment,ParameterValue=$(ENV) \
-			ParameterKey=SlackHandlerFunctionArn,ParameterValue=$$LAMBDA_ARN \
-			ParameterKey=SlackHandlerFunctionName,ParameterValue=$$LAMBDA_NAME && \
-	aws cloudformation wait stack-create-complete --stack-name cloudops-apigateway-$(ENV) && \
-	echo "API Gateway stack deployed"
-
-deploy-all: deploy-vpc deploy-dynamodb deploy-iam deploy-ecr deploy-ecs deploy-stepfunc deploy-lambda
-	@echo "All infrastructure stacks deployed"
+cleanup:
+	@echo "Cleaning up CloudOps resources..."
+	@./deployments/cleanup-stack.sh $(ENV)
 
 # Development targets
 test:
@@ -201,6 +95,38 @@ deps:
 	@go mod download
 	@go mod tidy
 
+# Local Testing
+local-start:
+	@echo "Starting local DynamoDB..."
+	@docker-compose up -d
+	@echo "DynamoDB Local: http://localhost:8000"
+	@echo "DynamoDB Admin: http://localhost:8001"
+
+local-setup: local-start
+	@echo "Setting up local DynamoDB tables..."
+	@./scripts/setup-local-dynamodb.sh
+
+local-test:
+	@./scripts/test-agent-interactive.sh
+
+local-docker:
+	@./scripts/test-agent-docker.sh
+
+local-rebuild:
+	@./scripts/rebuild-and-test-docker.sh
+
+local-stop:
+	@echo "Stopping local services..."
+	@docker-compose down
+
+local-clean: local-stop
+	@echo "Cleaning local data..."
+	@docker-compose down -v
+
+# Slack Configuration
+slack-manifest:
+	@./scripts/generate-slack-manifest.sh $(ENV)
+
 # Monitoring
 logs-lambda:
 	@aws logs tail /aws/lambda/cloudops-slack-handler-$(ENV) --follow
@@ -219,20 +145,5 @@ clean:
 	@rm -rf bin/
 	@go clean
 
-clean-all: clean
-	@echo "WARNING: This will delete all CloudFormation stacks and DynamoDB data"
-	@read -p "Continue? [y/N] " -n 1 -r && echo && \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		for stack in cloudops-apigateway-$(ENV) cloudops-lambda-$(ENV) cloudops-stepfunctions-$(ENV) \
-		             cloudops-ecs-$(ENV) cloudops-ecr-$(ENV) cloudops-iam-$(ENV) \
-		             cloudops-dynamodb-$(ENV) cloudops-vpc-$(ENV); do \
-			echo "Deleting $$stack..."; \
-			aws cloudformation delete-stack --stack-name $$stack; \
-			aws cloudformation wait stack-delete-complete --stack-name $$stack || true; \
-		done; \
-		echo "Cleaning up Secrets Manager..."; \
-		for secret in slack-bot-token slack-app-token slack-signing-key; do \
-			aws secretsmanager delete-secret --secret-id $$secret --force-delete-without-recovery || true; \
-		done; \
-		echo "Cleanup complete"; \
-	fi
+clean-all: clean cleanup
+	@echo "All build artifacts and AWS resources have been cleaned up"

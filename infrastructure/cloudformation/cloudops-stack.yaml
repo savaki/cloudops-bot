@@ -35,7 +35,7 @@ Description: 'CloudOps Bot - Complete single-file CloudFormation template for Sl
 #   aws cloudformation create-stack \
 #     --stack-name cloudops-dev \
 #     --template-body file://infrastructure/cloudformation/cloudops-stack.yaml \
-#     --parameters ParameterKey=Environment,ParameterValue=dev \
+#     --parameters ParameterKey=Env,ParameterValue=dev \
 #     --capabilities CAPABILITY_NAMED_IAM
 #
 # POST-DEPLOYMENT:
@@ -46,7 +46,7 @@ Description: 'CloudOps Bot - Complete single-file CloudFormation template for Sl
 # =====================================================================================
 
 Parameters:
-  Environment:
+  Env:
     Type: String
     Default: dev
     Description: Environment name (dev, staging, prod)
@@ -71,18 +71,18 @@ Resources:
       EnableDnsSupport: true
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-vpc-${Environment}'
+          Value: !Sub 'cloudops-vpc-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-igw-${Environment}'
+          Value: !Sub 'cloudops-igw-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -99,9 +99,9 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-public-subnet-1-${Environment}'
+          Value: !Sub 'cloudops-public-subnet-1-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -112,9 +112,9 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-public-subnet-2-${Environment}'
+          Value: !Sub 'cloudops-public-subnet-2-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -122,9 +122,9 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-public-rt-${Environment}'
+          Value: !Sub 'cloudops-public-rt-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -149,7 +149,7 @@ Resources:
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub 'cloudops-ecs-sg-${Environment}'
+      GroupName: !Sub 'cloudops-ecs-sg-${Env}'
       GroupDescription: Security group for CloudOps Bot ECS tasks
       VpcId: !Ref VPC
       SecurityGroupEgress:
@@ -160,16 +160,16 @@ Resources:
           Description: Allow outbound HTTPS for AWS APIs and Slack
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-ecs-sg-${Environment}'
+          Value: !Sub 'cloudops-ecs-sg-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   # ==================== DynamoDB Tables ====================
 
   ConversationsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub 'cloudops-conversations-${Environment}'
+      TableName: !Sub 'cloudops-conversations-${Env}'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: conversation_id
@@ -209,14 +209,14 @@ Resources:
         PointInTimeRecoveryEnabled: false
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-conversations-${Environment}'
+          Value: !Sub 'cloudops-conversations-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   ConversationHistoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub 'cloudops-conversation-history-${Environment}'
+      TableName: !Sub 'cloudops-conversation-history-${Env}'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: conversation_id
@@ -233,16 +233,16 @@ Resources:
         Enabled: true
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-conversation-history-${Environment}'
+          Value: !Sub 'cloudops-conversation-history-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   # ==================== IAM Roles ====================
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'cloudops-lambda-role-${Environment}'
+      RoleName: !Sub 'cloudops-lambda-role-${Env}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -273,8 +273,8 @@ Resources:
                   - 'ssm:GetParameter'
                   - 'ssm:GetParameters'
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-bot-token'
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-signing-key'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Env}/slack-bot-token'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Env}/slack-signing-key'
               - Effect: Allow
                 Action:
                   - 'logs:CreateLogGroup'
@@ -291,7 +291,7 @@ Resources:
   ECSTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'cloudops-ecs-execution-role-${Environment}'
+      RoleName: !Sub 'cloudops-ecs-execution-role-${Env}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -311,13 +311,13 @@ Resources:
                   - 'ssm:GetParameter'
                   - 'ssm:GetParameters'
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-bot-token'
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Environment}/slack-signing-key'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Env}/slack-bot-token'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudops/${Env}/slack-signing-key'
 
   ECSTaskRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'cloudops-ecs-task-role-${Environment}'
+      RoleName: !Sub 'cloudops-ecs-task-role-${Env}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -407,7 +407,7 @@ Resources:
   StepFunctionsExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub 'cloudops-stepfunctions-role-${Environment}'
+      RoleName: !Sub 'cloudops-stepfunctions-role-${Env}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -444,7 +444,7 @@ Resources:
   AgentECRRepository:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Sub 'cloudops-agent-${Environment}'
+      RepositoryName: !Sub 'cloudops-agent-${Env}'
       ImageScanningConfiguration:
         ScanOnPush: true
       ImageTagMutability: MUTABLE
@@ -472,7 +472,7 @@ Resources:
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: !Sub 'cloudops-cluster-${Environment}'
+      ClusterName: !Sub 'cloudops-cluster-${Env}'
       CapacityProviders:
         - FARGATE
       DefaultCapacityProviderStrategy:
@@ -485,13 +485,13 @@ Resources:
   AgentLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/ecs/cloudops-agent-${Environment}'
+      LogGroupName: !Sub '/ecs/cloudops-agent-${Env}'
       RetentionInDays: 7
 
   AgentTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub 'cloudops-agent-${Environment}'
+      Family: !Sub 'cloudops-agent-${Env}'
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
@@ -512,8 +512,6 @@ Resources:
           Environment:
             - Name: AWS_REGION
               Value: !Ref AWS::Region
-            - Name: Env
-              Value: !Ref Environment
             - Name: CONVERSATIONS_TABLE
               Value: !Ref ConversationsTable
             - Name: CONVERSATION_HISTORY_TABLE
@@ -524,16 +522,16 @@ Resources:
               Value: 'anthropic.claude-3-5-sonnet-20241022-v2:0'
           Secrets:
             - Name: SLACK_BOT_TOKEN
-              ValueFrom: !Sub '/cloudops/${Environment}/slack-bot-token'
+              ValueFrom: !Sub '/cloudops/${Env}/slack-bot-token'
             - Name: SLACK_SIGNING_KEY
-              ValueFrom: !Sub '/cloudops/${Environment}/slack-signing-key'
+              ValueFrom: !Sub '/cloudops/${Env}/slack-signing-key'
 
   # ==================== Step Functions ====================
 
   ConversationStateMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
-      StateMachineName: !Sub 'cloudops-conversation-${Environment}'
+      StateMachineName: !Sub 'cloudops-conversation-${Env}'
       RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
       DefinitionString:
         Fn::Sub:
@@ -615,7 +613,7 @@ Resources:
   SlackHandlerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/cloudops-slack-handler-${Environment}'
+      LogGroupName: !Sub '/aws/lambda/cloudops-slack-handler-${Env}'
       RetentionInDays: 7
 
   SlackHandlerFunction:
@@ -626,7 +624,7 @@ Resources:
           ignore_checks:
             - E3677  # Custom runtime for Go Lambda
     Properties:
-      FunctionName: !Sub 'cloudops-slack-handler-${Environment}'
+      FunctionName: !Sub 'cloudops-slack-handler-${Env}'
       Runtime: provided.al2
       Handler: bootstrap
       Architectures:
@@ -636,7 +634,6 @@ Resources:
       MemorySize: 512
       Environment:
         Variables:
-          Env: !Ref Environment
           CONVERSATIONS_TABLE: !Ref ConversationsTable
           CONVERSATION_HISTORY_TABLE: !Ref ConversationHistoryTable
           STEP_FUNCTION_ARN: !Ref ConversationStateMachine
@@ -646,16 +643,16 @@ Resources:
           echo "Deploy with: aws lambda update-function-code"
       Tags:
         - Key: Name
-          Value: !Sub 'cloudops-slack-handler-${Environment}'
+          Value: !Sub 'cloudops-slack-handler-${Env}'
         - Key: Environment
-          Value: !Ref Environment
+          Value: !Ref Env
 
   # ==================== API Gateway ====================
 
   SlackWebhookApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: !Sub 'cloudops-slack-webhook-${Environment}'
+      Name: !Sub 'cloudops-slack-webhook-${Env}'
       Description: Webhook for Slack events
       EndpointConfiguration:
         Types:
@@ -701,7 +698,7 @@ Resources:
       - SlackEventsMethod
     Properties:
       RestApiId: !Ref SlackWebhookApi
-      StageName: !Ref Environment
+      StageName: !Ref Env
 
   ApiGatewayLogRole:
     Type: AWS::IAM::Role
@@ -788,8 +785,8 @@ Outputs:
   # API Gateway
   SlackWebhookUrl:
     Description: Webhook URL for Slack events (use this in Slack app settings)
-    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/slack/events'
+    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Env}/slack/events'
 
   ApiEndpoint:
     Description: API Gateway endpoint
-    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Value: !Sub 'https://${SlackWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Env}'

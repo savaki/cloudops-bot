@@ -10,7 +10,7 @@ set -e
 #   --interactive                 Prompt for missing values
 #   --update                      Update existing parameters instead of failing
 
-Env=${1:-dev}
+ENV=${1:-dev}
 AWS_REGION=${AWS_REGION:-us-east-1}
 INTERACTIVE=false
 UPDATE=false
@@ -47,7 +47,7 @@ done
 echo "======================================================================"
 echo "CloudOps Bot - Parameter Store Setup"
 echo "======================================================================"
-echo "Environment: ${Env}"
+echo "Environment: ${ENV}"
 echo "Region: ${AWS_REGION}"
 echo ""
 
@@ -125,12 +125,12 @@ echo "======================================================================"
 
 # Create/update parameters
 manage_parameter \
-  "/cloudops/${Env}/slack-bot-token" \
+  "/cloudops/${ENV}/slack-bot-token" \
   "${SLACK_BOT_TOKEN}" \
   "Slack bot OAuth token for CloudOps Bot"
 
 manage_parameter \
-  "/cloudops/${Env}/slack-signing-key" \
+  "/cloudops/${ENV}/slack-signing-key" \
   "${SLACK_SIGNING_KEY}" \
   "Slack signing secret for webhook validation"
 
@@ -141,7 +141,7 @@ echo "======================================================================"
 
 # Verify all required parameters exist
 ALL_EXIST=true
-for param in /cloudops/${Env}/slack-bot-token /cloudops/${Env}/slack-signing-key; do
+for param in /cloudops/${ENV}/slack-bot-token /cloudops/${ENV}/slack-signing-key; do
   if aws ssm get-parameter \
     --name ${param} \
     --region ${AWS_REGION} >/dev/null 2>&1; then
@@ -162,8 +162,8 @@ if [ "$ALL_EXIST" = true ]; then
   echo "💰 Cost savings: Using Parameter Store (FREE) instead of Secrets Manager (~\$1.20/month)"
   echo ""
   echo "Next steps:"
-  echo "  1. Deploy infrastructure: ./deployments/deploy-stack.sh ${Env}"
-  echo "  2. Build agent image: ./deployments/build-agent.sh ${Env}"
+  echo "  1. Deploy infrastructure: ./deployments/deploy-stack.sh ${ENV}"
+  echo "  2. Build agent image: ./deployments/build-agent.sh ${ENV}"
   echo ""
 else
   echo "======================================================================"
@@ -173,17 +173,17 @@ else
   echo "Run this script again with one of these options:"
   echo ""
   echo "Option 1 - Interactive mode:"
-  echo "  ./deployments/setup-secrets.sh ${Env} --interactive"
+  echo "  ./deployments/setup-secrets.sh ${ENV} --interactive"
   echo ""
   echo "Option 2 - Command line arguments:"
-  echo "  ./deployments/setup-secrets.sh ${Env} \\"
+  echo "  ./deployments/setup-secrets.sh ${ENV} \\"
   echo "    --slack-bot-token xoxb-your-token \\"
   echo "    --slack-signing-key your-signing-secret"
   echo ""
   echo "Option 3 - Environment variables:"
   echo "  export SLACK_BOT_TOKEN=xoxb-..."
   echo "  export SLACK_SIGNING_KEY=..."
-  echo "  ./deployments/setup-secrets.sh ${Env} \\"
+  echo "  ./deployments/setup-secrets.sh ${ENV} \\"
   echo "    --slack-bot-token \"\$SLACK_BOT_TOKEN\" \\"
   echo "    --slack-signing-key \"\$SLACK_SIGNING_KEY\""
   echo ""

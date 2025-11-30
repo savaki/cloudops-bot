@@ -1,0 +1,37 @@
+display_information:
+  name: CloudOps Bot
+  description: AI-powered AWS troubleshooting assistant that helps debug cloud infrastructure issues
+  background_color: "#2c3e50"
+  long_description: CloudOps Bot is an intelligent assistant that helps you troubleshoot AWS infrastructure issues directly from Slack. Ask questions about EC2 instances, RDS databases, CloudWatch logs, Lambda functions, and more. Powered by Claude AI with read-only AWS access for safe operations.
+
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: CloudOps Bot
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - channels:read
+      - chat:write
+      - im:history
+      - users:read
+
+settings:
+  event_subscriptions:
+    # Request URL will be added after AWS deployment
+    # Format: https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/dev/slack/events
+    request_url: ""
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

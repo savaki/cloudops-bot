@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # Local DynamoDB for testing
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: cloudops-dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    networks:
+      - cloudops-local
+
+  # DynamoDB Admin UI (optional but helpful)
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:latest
+    container_name: cloudops-dynamodb-admin
+    ports:
+      - "8001:8001"
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    depends_on:
+      - dynamodb-local
+    networks:
+      - cloudops-local
+
+networks:
+  cloudops-local:
+    driver: bridge
